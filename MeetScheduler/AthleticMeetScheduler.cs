@@ -4,21 +4,10 @@ using Google.OrTools.Sat;
 
 namespace MeetScheduler
 {
-    class AthleticMeetScheduler
+    public class AthleticMeetScheduler
     {
-        public class Event
-        {
-            public string Name { get; set; }
-            public int Id { get; set; }
-            public int DurationInSlots { get; set; }
-            public string Area { get; set; }
-        }
 
-        public class Participant
-        {
-            public string Name { get; set; }
-            public List<int> EventIds { get; set; } // List of events the participant is part of
-        }
+        public const int MinutesPerSlot = 5;
 
         public static void Main()
         {
@@ -43,6 +32,53 @@ namespace MeetScheduler
             // Number of time slots available
             int numSlots = 14;
 
+            var (eventTimeSlots, solver, status) = GetMeetSchedule(events, participants, numSlots);
+            PrintResult(eventTimeSlots, solver, status, events, participants, numSlots);
+
+        }
+
+        public static void PrintResult(IntVar[,] eventTimeSlots, CpSolver solver, CpSolverStatus status, List<Event> events, List<Participant> participants, int numSlots)
+        {
+            Console.WriteLine(solver.SolutionInfo());
+            if (status == CpSolverStatus.Optimal || status == CpSolverStatus.Feasible)
+            {
+                Console.WriteLine("Optimal Schedule:");
+                for (int i = 0; i < events.Count; i++)
+                {
+                    for (int t = 0; t < numSlots; t++)
+                    {
+                        if (solver.Value(eventTimeSlots[i, t]) == 1)
+                        {
+                            Console.WriteLine($"{events[i].Name} scheduled from time slot {t} to {t + events[i].DurationInSlots - 1}");
+                        }
+                    }
+                }
+
+                // Print the time schedule for each participant
+                foreach (var participant in participants)
+                {
+                    Console.WriteLine($"\n{participant.Name}'s Schedule:");
+                    foreach (var eventId in participant.EventIds)
+                    {
+                        for (int t = 0; t < numSlots; t++)
+                        {
+                            if (solver.Value(eventTimeSlots[eventId, t]) == 1)
+                            {
+                                Console.WriteLine($"{events[eventId].Name} scheduled from time slot {t} to {t + events[eventId].DurationInSlots - 1}");
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine("No solution found.");
+            }
+
+        }
+
+        public static (IntVar[,],CpSolver,CpSolverStatus) GetMeetSchedule(List<Event> events, List<Participant> participants, int numSlots)
+        {
             // Create a solver (CP-SAT solver)
             CpModel model = new CpModel();
 
@@ -56,6 +92,20 @@ namespace MeetScheduler
                 }
             }
 
+            //AddConstraintNotSameEventInSameAreaSimultaneously(model, eventTimeSlots, events, numSlots);
+            AddConstraintNoOverlappingEventsForParticipants(model, eventTimeSlots, events, participants, numSlots);
+            AddConstraintSequentialEventStartTimes(model, eventTimeSlots, events, numSlots);
+            AddConstraintEventExactlyOnce(model, eventTimeSlots, events, numSlots);
+
+            // Solve the problem
+            Console.WriteLine("Starting to solve...");
+            CpSolver solver = new CpSolver();
+            CpSolverStatus status = solver.Solve(model);
+            return (eventTimeSlots, solver, status);
+        }
+
+        private static void AddConstraintEventExactlyOnce(CpModel model, IntVar[,] eventTimeSlots, List<Event> events, int numSlots)
+        {
             // Each event must be scheduled exactly once
             for (int i = 0; i < events.Count; i++)
             {
@@ -64,9 +114,12 @@ namespace MeetScheduler
                 {
                     timeSlotsForEvent.Add(eventTimeSlots[i, t]);
                 }
-               model.Add(LinearExpr.Sum(timeSlotsForEvent) == 1); // Each event starts exactly once
+                model.Add(LinearExpr.Sum(timeSlotsForEvent) == 1);  // Each event starts exactly once
             }
+        }
 
+        private static void AddConstraintNotSameEventInSameAreaSimultaneously(CpModel model, IntVar[,] eventTimeSlots, List<Event> events, int numSlots)
+        {
             // Ensure that events do not overlap in the same time slot for events in the same area
             for (int t = 0; t < numSlots; t++)
             {
@@ -83,7 +136,10 @@ namespace MeetScheduler
                     model.Add(LinearExpr.Sum(timeSlotUsage) <= 1);
                 }
             }
+        }
 
+        private static void AddConstraintNoOverlappingEventsForParticipants(CpModel model, IntVar[,] eventTimeSlots, List<Event> events, List<Participant> participants, int numSlots)
+        {
             foreach (var participant in participants)
             {
                 for (int i = 0; i < participant.EventIds.Count; i++)
@@ -125,48 +181,45 @@ namespace MeetScheduler
                     }
                 }
             }
+        }
 
+        private static void AddConstraintSequentialEventStartTimes(CpModel model, IntVar[,] eventTimeSlots, List<Event> events, int numSlots)
+        {
+            var eventTypes = events.GroupBy(e => e.EventType); // Group events by type (e.g., 100m, Long Jump)
 
-            // Solve the problem
-            Console.WriteLine("Starting to solve...");
-            CpSolver solver = new CpSolver();
-            CpSolverStatus status = solver.Solve(model);
-
-            // Output the solution
-            if (status == CpSolverStatus.Optimal)
+            foreach (var eventType in eventTypes)
             {
-                Console.WriteLine("Optimal Schedule:");
-                for (int i = 0; i < events.Count; i++)
+                List<int> eventIds = eventType.Select(e => e.Id).ToList(); // Get event IDs for this type
+
+                for (int i = 0; i < eventIds.Count - 1; i++)
                 {
+                    int event1Id = eventIds[i];
+                    int event2Id = eventIds[i + 1];
+
                     for (int t = 0; t < numSlots; t++)
                     {
-                        if (solver.Value(eventTimeSlots[i, t]) == 1)
-                        {
-                            Console.WriteLine($"{events[i].Name} scheduled from time slot {t} to {t + events[i].DurationInSlots - 1}");
-                        }
-                    }
-                }
+                        int nextStartTime = t + events[event1Id].DurationInSlots;
 
-                // Print the time schedule for each participant
-                foreach (var participant in participants)
-                {
-                    Console.WriteLine($"\n{participant.Name}'s Schedule:");
-                    foreach (var eventId in participant.EventIds)
-                    {
-                        for (int t = 0; t < numSlots; t++)
+                        if (nextStartTime < numSlots - events[event2Id].DurationInSlots)
                         {
-                            if (solver.Value(eventTimeSlots[eventId, t]) == 1)
-                            {
-                                Console.WriteLine($"{events[eventId].Name} scheduled from time slot {t} to {t + events[eventId].DurationInSlots - 1}");
-                            }
+                            // If event1 is scheduled at t, event2 must be scheduled at nextStartTime
+                            model.AddImplication((ILiteral)eventTimeSlots[event1Id, t], (ILiteral)eventTimeSlots[event2Id, nextStartTime]);
+                        }
+                        else
+                        {
+                            model.Add(eventTimeSlots[event1Id, t] == 0);
+                            // If event1 starts too late, then either event1 or event2 must NOT be scheduled
                         }
                     }
                 }
-            }
-            else
-            {
-                Console.WriteLine("No optimal solution found.");
             }
         }
+
+
+
+
+        // model.AddImplication(eventTimeSlots[event1Id, t] == 1, eventTimeSlots[event2Id, t + events[event1Id].DurationInSlots] == 1);
+
+
     }
 }
