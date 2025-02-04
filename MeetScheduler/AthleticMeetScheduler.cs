@@ -8,6 +8,7 @@ namespace MeetScheduler
     {
 
         public const int MinutesPerSlot = 5;
+        public static DateTime meetDateTime = new DateTime(2025, 2, 4, 12, 0, 0);
 
         public static void Main()
         {
@@ -37,6 +38,12 @@ namespace MeetScheduler
 
         }
 
+        public static string SlotNoToTimeString(int slotNo)
+        {
+            int minutes = slotNo * MinutesPerSlot;
+            return meetDateTime.AddMinutes(minutes).ToString("HH:mm");
+        } 
+
         public static void PrintResult(IntVar[,] eventTimeSlots, CpSolver solver, CpSolverStatus status, List<Event> events, List<Participant> participants, int numSlots)
         {
             Console.WriteLine(solver.SolutionInfo());
@@ -49,7 +56,7 @@ namespace MeetScheduler
                     {
                         if (solver.Value(eventTimeSlots[i, t]) == 1)
                         {
-                            Console.WriteLine($"{events[i].Name} scheduled from time slot {t} to {t + events[i].DurationInSlots - 1}");
+                            Console.WriteLine($"{events[i].Name} scheduled from time slot {SlotNoToTimeString(t)} to {SlotNoToTimeString(t + events[i].DurationInSlots - 1)}");
                         }
                     }
                 }
@@ -64,7 +71,7 @@ namespace MeetScheduler
                         {
                             if (solver.Value(eventTimeSlots[eventId, t]) == 1)
                             {
-                                Console.WriteLine($"{events[eventId].Name} scheduled from time slot {t} to {t + events[eventId].DurationInSlots - 1}");
+                                Console.WriteLine($"{events[eventId].Name} scheduled from time slot {SlotNoToTimeString(t)} to {SlotNoToTimeString(t + events[eventId].DurationInSlots - 1)}");
                             }
                         }
                     }
@@ -92,7 +99,7 @@ namespace MeetScheduler
                 }
             }
 
-            //AddConstraintNotSameEventInSameAreaSimultaneously(model, eventTimeSlots, events, numSlots);
+            AddConstraintNotSameEventInSameAreaSimultaneously(model, eventTimeSlots, events, numSlots);
             AddConstraintNoOverlappingEventsForParticipants(model, eventTimeSlots, events, participants, numSlots);
             AddConstraintSequentialEventStartTimes(model, eventTimeSlots, events, numSlots);
             AddConstraintEventExactlyOnce(model, eventTimeSlots, events, numSlots);
