@@ -38,6 +38,11 @@ namespace MeetScheduler
 
         }
 
+        public static int MinutesToSlotNo(double minutes)
+        {
+            return (int)Math.Ceiling((double)minutes / MinutesPerSlot);
+        }
+
         public static string SlotNoToTimeString(int slotNo)
         {
             int minutes = slotNo * MinutesPerSlot;
@@ -49,18 +54,6 @@ namespace MeetScheduler
             Console.WriteLine(solver.SolutionInfo());
             if (status == CpSolverStatus.Optimal || status == CpSolverStatus.Feasible)
             {
-                Console.WriteLine("Optimal Schedule:");
-                for (int i = 0; i < events.Count; i++)
-                {
-                    for (int t = 0; t < numSlots; t++)
-                    {
-                        if (solver.Value(eventTimeSlots[i, t]) == 1)
-                        {
-                            Console.WriteLine($"{events[i].Name} scheduled from time slot {SlotNoToTimeString(t)} to {SlotNoToTimeString(t + events[i].DurationInSlots - 1)}");
-                        }
-                    }
-                }
-
                 // Print the time schedule for each participant
                 foreach (var participant in participants)
                 {
@@ -71,8 +64,21 @@ namespace MeetScheduler
                         {
                             if (solver.Value(eventTimeSlots[eventId, t]) == 1)
                             {
-                                Console.WriteLine($"{events[eventId].Name} scheduled from time slot {SlotNoToTimeString(t)} to {SlotNoToTimeString(t + events[eventId].DurationInSlots - 1)}");
+                                Console.WriteLine($"{events[eventId].Name} scheduled from time slot {SlotNoToTimeString(t)} to {SlotNoToTimeString(t + events[eventId].DurationInSlots)}");
                             }
+                        }
+                    }
+                }
+
+                Console.WriteLine("Optimal Schedule:");
+                for (int i = 0; i < events.Count; i++)
+                {
+                    for (int t = 0; t < numSlots; t++)
+                    {
+                        if (solver.Value(eventTimeSlots[i, t]) == 1)
+                        {
+                            int participantCount = participants.Where(x => x.EventIds.Contains(events[i].Id)).Count();
+                            Console.WriteLine($"{events[i].Name} ({participantCount}) scheduled from time slot {SlotNoToTimeString(t)} to {SlotNoToTimeString(t + events[i].DurationInSlots)}");
                         }
                     }
                 }
@@ -103,6 +109,13 @@ namespace MeetScheduler
             AddConstraintNoOverlappingEventsForParticipants(model, eventTimeSlots, events, participants, numSlots);
             AddConstraintSequentialEventStartTimes(model, eventTimeSlots, events, numSlots);
             AddConstraintEventExactlyOnce(model, eventTimeSlots, events, numSlots);
+
+            // Get all event IDs that belong to the specified event group
+            List<int> prioritizedEventIds = events.Where(e => e.EventType == "60 meter hekk").Select(e => e.Id).ToList();
+
+            List<string> orderedEventTypes = new List<string> { "60 meter hekk", "60 meter", "100 meter", "200 meter", "600 meter"};
+            AddConstraintEventForceSlot(model, eventTimeSlots, events, orderedEventTypes[0], 0, numSlots);
+            AddConstraintEventTypeOrdering(model, eventTimeSlots, events, orderedEventTypes, numSlots);
 
             // Solve the problem
             Console.WriteLine("Starting to solve...");
@@ -149,6 +162,8 @@ namespace MeetScheduler
         {
             foreach (var participant in participants)
             {
+                Console.WriteLine($"Checking overlap for {participant.Name}");
+
                 for (int i = 0; i < participant.EventIds.Count; i++)
                 {
                     for (int j = i + 1; j < participant.EventIds.Count; j++)
@@ -163,7 +178,7 @@ namespace MeetScheduler
                                 // Check if event 1 and event 2 overlap
                                 if (t1 + events[event1Id].DurationInSlots > t2 && t2 + events[event2Id].DurationInSlots > t1)
                                 {
-                                    Console.WriteLine($"Checking overlap for {events[event1Id].Name} (starts at {t1}) and {events[event2Id].Name} (starts at {t2})");
+                                    //Console.WriteLine($"Checking overlap for {events[event1Id].Name} (starts at {t1}) and {events[event2Id].Name} (starts at {t2})");
 
                                     // We need to enforce that either event1 finishes before event2 starts, or event2 finishes before event1 starts
                                     var event1BeforeEvent2 = model.NewBoolVar($"event1_{event1Id}_before_event2_{event2Id}");
@@ -222,10 +237,58 @@ namespace MeetScheduler
             }
         }
 
+        private static void AddConstraintEventForceSlot(CpModel model, IntVar[,] eventTimeSlots, List<Event> events, string eventType, int forcedSlot, int numSlots)
+        {
+            var firstEvent = events.Where(x => x.EventType == eventType).First();
+            model.Add(eventTimeSlots[firstEvent.Id, 0] == 1);
+            for (int t = 1; t < numSlots; t++)
+            {
+                model.Add(eventTimeSlots[firstEvent.Id, t] == 0);
+            }
+        }
 
+        private static void AddConstraintEventTypeOrdering(
+            CpModel model,
+            IntVar[,] eventTimeSlots,
+            List<Event> events,
+            List<string> orderedEventTypes,
+            int numSlots)
+        {
+            // Create a mapping from event types to their corresponding events
+            var eventGroups = events
+                .Where(e => orderedEventTypes.Contains(e.EventType))
+                .GroupBy(e => e.EventType)
+                .OrderBy(g => orderedEventTypes.IndexOf(g.Key)) // Order by defined list
+                .ToList();
 
+            // Iterate through the event groups to enforce ordering constraints
+            for (int i = 0; i < eventGroups.Count - 1; i++)
+            {
+                var earlierEvents = eventGroups[i].ToList();   // Events of type[i]
+                var laterEvents = eventGroups[i + 1].ToList(); // Events of type[i+1]
 
-        // model.AddImplication(eventTimeSlots[event1Id, t] == 1, eventTimeSlots[event2Id, t + events[event1Id].DurationInSlots] == 1);
+                foreach (var earlyEvent in earlierEvents)
+                {
+                    foreach (var lateEvent in laterEvents)
+                    {
+                        // Compute start times using weighted sum of time slot variables
+                        var earlyStartTime = model.NewIntVar(0, numSlots - 1, $"start_{earlyEvent.Id}");
+                        var lateStartTime = model.NewIntVar(0, numSlots - 1, $"start_{lateEvent.Id}");
+
+                        model.Add(earlyStartTime == LinearExpr.Sum(
+                            Enumerable.Range(0, numSlots)
+                                .Select(t => LinearExpr.Term(eventTimeSlots[earlyEvent.Id, t], t))));
+
+                        model.Add(lateStartTime == LinearExpr.Sum(
+                            Enumerable.Range(0, numSlots)
+                                .Select(t => LinearExpr.Term(eventTimeSlots[lateEvent.Id, t], t))));
+
+                        // Ensure earlier event starts before later event
+                        model.Add(earlyStartTime < lateStartTime);
+                    }
+                }
+            }
+        }
 
 
     }
